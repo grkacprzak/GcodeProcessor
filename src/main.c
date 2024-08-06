@@ -1,7 +1,7 @@
 #include <stdlib.h>
 
 #define TEXT_ALIVE "$it's alive\r\n"
-#define TEXT_OK "ok\r\n"
+#define TEXT_OK "ok.\r\n"
 #define TEXT_ERROR "error\r\n"
 #define TEXT_EOL "\r\n"
 
