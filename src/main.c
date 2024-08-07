@@ -3,6 +3,8 @@
 #define TEXT_ALIVE "$it's alive\r\n"
 #define TEXT_OK "ok.\r\n"
 #define TEXT_ERROR "error\r\n"
+#define TEXT_E23 "$E23 command don't recognize\r\n"
+#define TEXT_E24 "$E24 too many parameters\r\n"
 #define TEXT_EOL "\r\n"
 
 #define P0 0
@@ -157,6 +159,7 @@ static volatile uint8_t uart_rxbuf_skip = 0;
 static char gcode_cmd_buf[32];
 static char gcode_cmd[GCMD_PAR_QTY];
 static int32_t gcode_par[GCMD_PAR_QTY];
+static uint8_t gcode_par_dec[GCMD_PAR_QTY];
 
 #define UNIT_DIST_PREC 1000 // distance unit precision: milimeters * x
 #define DRIVERS_QTY 4
@@ -165,7 +168,9 @@ static char axis_letters[DRIVERS_QTY];
 static int32_t position_absolute[DRIVERS_QTY] = {0,0,0,0}; // absolute position in steps
 static int32_t motor_resolution[DRIVERS_QTY] = {40,40,40,1}; // motors resolution steps/mm
 static uint8_t motor_dir_reverse[DRIVERS_QTY] = {0,0,0,0}; // motor rotation direction: 0 - normal, 1 - reversed
-static int32_t motor_max_speed[DRIVERS_QTY] = {250,50,50,50}; // motor max speed [mm/sec]
+static int32_t motor_max_speed[DRIVERS_QTY] = {500,50,50,50}; // motor max speed [mm/sec]
+static int32_t motor_speed[DRIVERS_QTY] = {250,50,50,50}; //motor speed for current move [mm/sec]
+static int32_t motor_max_acceleration[DRIVERS_QTY] = {25,20,20,10}; // motor max acceleration [mm/sec2]
 static int32_t motor_acceleration[DRIVERS_QTY] = {25,20,20,10}; // motor acceleration [mm/sec2]
 
 void delay_us(int us){
@@ -385,6 +390,8 @@ void move_to(int32_t position_to[]){ //move to absolute position [um]
     int32_t step_acceleration;
 
     //uart_write_arr_int32("moveto:", position_to, DRIVERS_QTY);
+    //uart_write_arr_int32("speed:", motor_speed, DRIVERS_QTY);
+    //uart_write_arr_int32("accel:", motor_acceleration, DRIVERS_QTY);
 
     for (uint8_t i=0; i<DRIVERS_QTY; i++){
         step_dir[i] = 0;
@@ -417,46 +424,49 @@ void move_to(int32_t position_to[]){ //move to absolute position [um]
         }
     }
 
-    step_max_speed = (motor_max_speed[0] * 1000) ; //maximum speed *1000 to increase precision    
-    step_delay_denom = 1000000 * motor_resolution[0]; // microsecond * motor resolution
-    step_delay =  step_delay_denom / step_max_speed; //minimum step delay for maximum speed; microsecond * motor resolution / max speed
-    step_acceleration = (motor_acceleration[0] * 1000) / motor_resolution[0]; // *1000 to increace precision
+    if (motor_speed[0] > 0 && motor_acceleration[0] > 0){
+        step_max_speed = (motor_speed[0] * 1000) ; //maximum speed *1000 to increase precision    
+        step_delay_denom = 1000000 * motor_resolution[0]; // microsecond * motor resolution
+        step_delay =  step_delay_denom / step_max_speed; //minimum step delay for maximum speed; microsecond * motor resolution / max speed
+        step_acceleration = (motor_acceleration[0] * 1000) / motor_resolution[0]; // *1000 to increace precision
 
-    tmp_int32 = unit_d_prec * (1000 / 2); // "1/2" accum, * 1000 to increae precision same as step_ac
+        tmp_int32 = unit_d_prec * (1000 / 2); // "1/2" accum, * 1000 to increae precision same as step_ac
 
-    while (step_i > 0){
-        if (step_i > step_i_acc && step_speed < step_max_speed){
-            step_speed += step_acceleration; //calculate next step speed
-            if (step_speed > step_max_speed) step_speed = step_max_speed;
-            step_i_acc++;
-        }
-        if (step_i < step_i_acc){
-            step_speed -= step_acceleration; //calculate next step speed
-            if (step_speed < step_acceleration) step_speed = step_acceleration;
-        }
-        if (step_speed > 0) step_delay = step_delay_denom / step_speed; // calculate delay in us
-        /*uart_transmit_int32(step_i, 0);
-        uart_transmit_str(" ");
-        uart_transmit_int32(step_i_acc, 0);
-        uart_transmit_str(" ");
-        uart_transmit_int32(step_speed, 0);
-        uart_transmit_str(" ");
-        uart_transmit_int32(step_delay, 0);
-        uart_transmit_str(TEXT_EOL);
-        */
-        for (uint8_t i = 0; i<DRIVERS_QTY; i++){
-            step_accum[i] += step_ac[i];
-            if (steps_left[i] > 0 && step_accum[i] >= tmp_int32){ // make step when accum value is bigger then "1/2" 
-                step_accum[i] -= tmp_int32 << 1; // accum value minus "1" step acc value
-                steps_left[i] --;
-                steps_done[i] ++;
-                step_n[i] = step_dir[i]; //"step_dir" equals one step
-            }else{
-                step_n[i] = 0;
+        
+        while (step_i > 0){ // "move" loop
+            if (step_i > step_i_acc && step_speed < step_max_speed){
+                step_speed += step_acceleration; //calculate next step speed
+                if (step_speed > step_max_speed) step_speed = step_max_speed;
+                step_i_acc++;
             }
-        }
-        move_step(step_n, step_delay);
-        step_i--;
+            if (step_i < step_i_acc){
+                step_speed -= step_acceleration; //calculate next step speed
+                if (step_speed < step_acceleration) step_speed = step_acceleration;
+            }
+            if (step_speed > 0) step_delay = step_delay_denom / step_speed; // calculate delay in us
+            /*uart_transmit_int32(step_i, 0);
+            uart_transmit_str(" ");
+            uart_transmit_int32(step_i_acc, 0);
+            uart_transmit_str(" ");
+            uart_transmit_int32(step_speed, 0);
+            uart_transmit_str(" ");
+            uart_transmit_int32(step_delay, 0);
+            uart_transmit_str(TEXT_EOL);
+            */
+            for (uint8_t i = 0; i<DRIVERS_QTY; i++){
+                step_accum[i] += step_ac[i];
+                if (steps_left[i] > 0 && step_accum[i] >= tmp_int32){ // make step when accum value is bigger then "1/2" 
+                    step_accum[i] -= tmp_int32 << 1; // accum value minus "1" step acc value
+                    steps_left[i] --;
+                    steps_done[i] ++;
+                    step_n[i] = step_dir[i]; //"step_dir" equals one step
+                }else{
+                    step_n[i] = 0;
+                }
+            }
+            move_step(step_n, step_delay);
+            step_i--;
+        } //end "move" loop
     }
 
     step_i = 0;
@@ -492,48 +502,46 @@ void move_to_xyz(int32_t ax, int32_t ay, int32_t az){
 void gcode_parse(char gcode_parse_buf[]){
     uint8_t i = 0;
     uint8_t par_i = 0;
-    
+    int32_t parse_sign;
+    uint8_t parse_dec;
+
     for (i=0; i<GCMD_PAR_QTY; i++){
         gcode_cmd[i] = '\0';
         gcode_par[i] = 0;
+        gcode_par_dec[i] = 0;
     }
 
     //uart_write_str(gcode_parse_buf);
     //uart_write_str(TEXT_EOL);
 
     i = 0;
+    parse_sign = 1;
+    parse_dec = 0;
     while (gcode_parse_buf[i] != '\0'){
         switch (gcode_parse_buf[i])
         {
-        case ' ':
-            break;
-        case 'G':
-            gcode_cmd[0] = 'G';
-            break;
-        case 'M':
-            gcode_cmd[0] = 'M';
+        case 'A' ... 'Z':
+            gcode_cmd[par_i] = gcode_parse_buf[i];
+            parse_sign = 1;
+            parse_dec = 0;
             break;
         case '0' ... '9':
             gcode_par[par_i] *= 10;
-            gcode_par[par_i] += (((int8_t)gcode_parse_buf[i]) & 0x0F);
+            gcode_par[par_i] += (((int8_t)gcode_parse_buf[i]) & 0x0F)*parse_sign;
+            gcode_par_dec[par_i] += parse_dec; 
             break;
         case '.':
+            parse_dec = 1;
             break;
-        case 'X':
-        case 'Y':
-        case 'Z':
-        case 'A':
-        case 'B':
-        case 'C':
-        case 'S':
-        case 'P':
+        case ' ':
             if (par_i <= GCMD_PAR_QTY){
-                par_i++;
-                gcode_cmd[par_i] = gcode_parse_buf[i];
-            }
-            else{
+                if (gcode_cmd[par_i] != '\0') par_i++;
+            }else{
                 uart_write_str(TEXT_ERROR);
             }
+            break;
+        case '-':
+            parse_sign = -1;
             break;
         default:
             break;
@@ -542,7 +550,7 @@ void gcode_parse(char gcode_parse_buf[]){
     }
     //uart_write_arr_char("par L:", gcode_cmd, GCMD_PAR_QTY);
     //uart_write_arr_int32("par v:", gcode_par, GCMD_PAR_QTY);
-
+    //uart_write_arr_uint8("par d:", gcode_par_dec, GCMD_PAR_QTY);
 }
 
 int main(void){
@@ -582,21 +590,33 @@ int main(void){
                 //uart_write_str(tmp_str);
                 i++;
                 j++;
-                gcode_cmd_buf[j] = '\0'; //clear next pos because '\0' is recognized as end of string
+                gcode_cmd_buf[j] = '\0'; //clear next pos because '\0' is end of string
                 if (i >= UART_RXBUF_LEN) i = 0;
             }
             uart_rxbuf_slot_ready[0] = 0;
             if (j>0){
                 //uart_write_str("$parsing\r\n");
                 gcode_parse(gcode_cmd_buf);
-                if (gcode_cmd[0] == 'G'){
+
+                switch (gcode_cmd[0])
+                {
+                case 'G':
                     switch (gcode_par[0])
                     {
                     case 1:
                         for(i=0; i<DRIVERS_QTY; i++){
-                            move_to_pos[i] = 0;
-                            for(j=1; j<GCMD_PAR_QTY; j++){
-                                if(axis_letters[i] == gcode_cmd[j]) move_to_pos[i] = gcode_par[j];
+                            move_to_pos[i] = (position_absolute[i] * 1000) / motor_resolution[i];
+                        }
+                        for(j=1; j<GCMD_PAR_QTY; j++){
+                            for(i=0; i<DRIVERS_QTY; i++){
+                                if(gcode_cmd[j] == axis_letters[i]) move_to_pos[i] = gcode_par[j];
+                            }
+                            if(gcode_cmd[j] == 'F'){
+                                if (gcode_par[j] <= motor_max_speed[0]){
+                                    motor_speed[0] = gcode_par[j];
+                                }else{
+                                    motor_speed[0] = motor_max_speed[0];
+                                }
                             }
                         }
                         move_to(move_to_pos);
@@ -609,13 +629,49 @@ int main(void){
                         uart_write_str(TEXT_OK);
                         break;
                     default:
+                        uart_write_str(TEXT_E23);
+                        break;
+                    } 
+                    break; //end case "G"
+                case 'M':
+                    switch (gcode_par[0])
+                    {
+                    case 106:
+                        uart_write_str(TEXT_OK);
+                        break;
+                    case 114:
+                        for (i=0; i<DRIVERS_QTY; i++){
+                            
+                            uart_write_str("X:0.000 Y:0.000 Z:0.000 A:0.000\r\n");
+                        }
+                        uart_write_str(TEXT_OK);
+                        break;
+                    case 115:
+                        uart_write_str("FIRMWARE_NAME: SimpleGcodeProcessor FIMWARE_VERSION: 1.0\r\n");
+                        uart_write_str(TEXT_OK);
+                        break;
+                    case 204:
+                        for(i=0; i<DRIVERS_QTY; i++){
+                            for(j=1; j<GCMD_PAR_QTY; j++){
+                                if(gcode_cmd[j] == 'S') motor_acceleration[0] = gcode_par[j];
+                            }
+                        }
+                        uart_write_str(TEXT_OK);
+                        break;
+                    case 400:
+                        uart_write_str(TEXT_OK);
+                        break;
+                    default:
                         uart_write_str("$E23- command don't recognize\r\n");
                         break;
-                    }
-                //uart_transmit_str("$parsing done\r\n");
-                }else{
-                uart_write_str("$parsing fail\r\n");
+                    } 
+                    break; //end case "M"
+
+                default:
+                    uart_write_str("$parsing fail\r\n");
+                    break;
                 }
+
             }
         }
     }
