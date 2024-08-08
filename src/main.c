@@ -168,10 +168,11 @@ static char axis_letters[DRIVERS_QTY];
 static int32_t position_absolute[DRIVERS_QTY] = {0,0,0,0}; // absolute position in steps
 static int32_t motor_resolution[DRIVERS_QTY] = {40,40,40,1}; // motors resolution steps/mm
 static uint8_t motor_dir_reverse[DRIVERS_QTY] = {0,0,0,0}; // motor rotation direction: 0 - normal, 1 - reversed
-static int32_t motor_max_speed[DRIVERS_QTY] = {500,50,50,50}; // motor max speed [mm/sec]
+static int32_t motor_max_speed[DRIVERS_QTY] = {400,50,50,50}; // motor max speed [mm/sec]
 static int32_t motor_speed[DRIVERS_QTY] = {250,50,50,50}; //motor speed for current move [mm/sec]
-static int32_t motor_max_acceleration[DRIVERS_QTY] = {25,20,20,10}; // motor max acceleration [mm/sec2]
-static int32_t motor_acceleration[DRIVERS_QTY] = {25,20,20,10}; // motor acceleration [mm/sec2]
+static int32_t motor_max_acceleration[DRIVERS_QTY] = {20,20,20,20}; // motor max acceleration [mm/sec2]
+static int32_t motor_acceleration[DRIVERS_QTY] = {20,20,20,10}; // motor acceleration [mm/sec2]
+static int32_t move_to_pos[DRIVERS_QTY];
 
 void delay_us(int us){
    while (us-- > 0) {
@@ -389,9 +390,9 @@ void move_to(int32_t position_to[]){ //move to absolute position [um]
     int32_t step_delay, step_delay_denom; // delay time applied after each step [us], denominator for calculatin delay time
     int32_t step_acceleration;
 
-    //uart_write_arr_int32("moveto:", position_to, DRIVERS_QTY);
-    //uart_write_arr_int32("speed:", motor_speed, DRIVERS_QTY);
-    //uart_write_arr_int32("accel:", motor_acceleration, DRIVERS_QTY);
+    uart_write_arr_int32("moveto:", position_to, DRIVERS_QTY);
+    uart_write_arr_int32("speed:", motor_speed, DRIVERS_QTY);
+    uart_write_arr_int32("accel:", motor_acceleration, DRIVERS_QTY);
 
     for (uint8_t i=0; i<DRIVERS_QTY; i++){
         step_dir[i] = 0;
@@ -555,8 +556,6 @@ void gcode_parse(char gcode_parse_buf[]){
 
 int main(void){
 
-    int32_t move_to_pos[DRIVERS_QTY];
-
     config_hw();
 
     //uart_rxbuf buffers clear
@@ -653,7 +652,13 @@ int main(void){
                     case 204:
                         for(i=0; i<DRIVERS_QTY; i++){
                             for(j=1; j<GCMD_PAR_QTY; j++){
-                                if(gcode_cmd[j] == 'S') motor_acceleration[0] = gcode_par[j];
+                                if(gcode_cmd[j] == 'S') {
+                                    if (gcode_par[j] <= motor_max_acceleration[0]){
+                                        motor_acceleration[0] = gcode_par[j];
+                                    }else{
+                                        motor_acceleration[0] = motor_max_acceleration[0];
+                                    }
+                                }
                             }
                         }
                         uart_write_str(TEXT_OK);
