@@ -259,6 +259,10 @@ void config_hw(void){
     gpio_pin_mode_set(PORT_DRV3DIR, PIO_DRV3DIR, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
     gpio_pin_mode_set(PORT_DRV3STEP, PIO_DRV3STEP, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
 
+    //gpio_pin_set(PORT_DRV3EN, PIO_DRV3EN, 0);
+    gpio_pin_mode_set(PORT_DRV4EN, PIO_DRV4EN, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
+    gpio_pin_mode_set(PORT_DRV4DIR, PIO_DRV4DIR, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
+    gpio_pin_mode_set(PORT_DRV4STEP, PIO_DRV4STEP, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
 }
 
 void uart_transmit_next(void){
@@ -361,16 +365,19 @@ void move_step(int8_t step[], uint32_t delay){
     gpio_pin_set(PORT_DRV1DIR, PIO_DRV1DIR, ((step[0] >> 1) & 0x01U) ^ motor_dir_reverse[0]);
     gpio_pin_set(PORT_DRV2DIR, PIO_DRV2DIR, ((step[1] >> 1) & 0x01U) ^ motor_dir_reverse[1]);
     gpio_pin_set(PORT_DRV3DIR, PIO_DRV3DIR, ((step[2] >> 1) & 0x01U) ^ motor_dir_reverse[2]);
+    gpio_pin_set(PORT_DRV4DIR, PIO_DRV4DIR, ((step[3] >> 1) & 0x01U) ^ motor_dir_reverse[3]);
     delay_us(2);
     //set "1" at STEP pins
     gpio_pin_set(PORT_DRV1STEP, PIO_DRV1STEP, (step[0] & 1U));
     gpio_pin_set(PORT_DRV2STEP, PIO_DRV2STEP, (step[1] & 1U));
     gpio_pin_set(PORT_DRV3STEP, PIO_DRV3STEP, (step[2] & 1U));
+    gpio_pin_set(PORT_DRV4STEP, PIO_DRV4STEP, (step[3] & 1U));
     delay_us(delay/2);
     //set "0" at STEP pins
     gpio_pin_set(PORT_DRV1STEP, PIO_DRV1STEP, 0);
     gpio_pin_set(PORT_DRV2STEP, PIO_DRV2STEP, 0);
     gpio_pin_set(PORT_DRV3STEP, PIO_DRV3STEP, 0);
+    gpio_pin_set(PORT_DRV4STEP, PIO_DRV4STEP, 0);
     delay_us(delay/2);
     for(uint8_t i=0; i<DRIVERS_QTY; i++){
         position_absolute[i] += step[i];
