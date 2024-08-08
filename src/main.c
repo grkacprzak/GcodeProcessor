@@ -2,9 +2,10 @@
 
 #define TEXT_ALIVE "$it's alive\r\n"
 #define TEXT_OK "ok.\r\n"
-#define TEXT_ERROR "error\r\n"
-#define TEXT_E23 "$E23 command don't recognize\r\n"
-#define TEXT_E24 "$E24 too many parameters\r\n"
+#define TEXT_ERROR "$ERROR.\r\n"
+#define TEXT_ERROR_GC_DONTRECOGNIZE "$ERROR command don't recognize\r\n"
+#define TEXT_ERROR_GC_TOOMANYPARAM "$ERROR too many parameters\r\n"
+#define TEXT_ERROR_GC_PARSINGFAIL "$ERROR parsing fail\r\n"
 #define TEXT_EOL "\r\n"
 
 #define P0 0
@@ -383,16 +384,16 @@ void move_to(int32_t position_to[]){ //move to absolute position [um]
     int32_t step_accum[DRIVERS_QTY];
     int32_t step_ac[DRIVERS_QTY];
     int8_t step_n[DRIVERS_QTY];
-    int32_t step_i = 0, step_i_acc = 0;
+    int32_t step_i = 0, step_i_acc = 0; // step_i - count steps to destination position, step_i_acc - count steps with acceleration+
     int32_t tmp_int32 = 0;
     int64_t tmp_int64 = 0;
     int32_t step_speed = 0, step_max_speed;
     int32_t step_delay, step_delay_denom; // delay time applied after each step [us], denominator for calculatin delay time
     int32_t step_acceleration;
 
-    uart_write_arr_int32("moveto:", position_to, DRIVERS_QTY);
-    uart_write_arr_int32("speed:", motor_speed, DRIVERS_QTY);
-    uart_write_arr_int32("accel:", motor_acceleration, DRIVERS_QTY);
+    //uart_write_arr_int32("moveto:", position_to, DRIVERS_QTY);
+    //uart_write_arr_int32("speed:", motor_speed, DRIVERS_QTY);
+    //uart_write_arr_int32("accel:", motor_acceleration, DRIVERS_QTY);
 
     for (uint8_t i=0; i<DRIVERS_QTY; i++){
         step_dir[i] = 0;
@@ -426,25 +427,26 @@ void move_to(int32_t position_to[]){ //move to absolute position [um]
     }
 
     if (motor_speed[0] > 0 && motor_acceleration[0] > 0){
-        step_max_speed = (motor_speed[0] * 1000) ; //maximum speed *1000 to increase precision    
+        step_max_speed = (motor_speed[0] * 1000) ; //maximum speed *1000 to increase precision
         step_delay_denom = 1000000 * motor_resolution[0]; // microsecond * motor resolution
-        step_delay =  step_delay_denom / step_max_speed; //minimum step delay for maximum speed; microsecond * motor resolution / max speed
+        step_delay =  step_delay_denom / step_max_speed; // step delay for maximum speed; microsecond * motor resolution / max speed
         step_acceleration = (motor_acceleration[0] * 1000) / motor_resolution[0]; // *1000 to increace precision
 
         tmp_int32 = unit_d_prec * (1000 / 2); // "1/2" accum, * 1000 to increae precision same as step_ac
 
         
         while (step_i > 0){ // "move" loop
-            if (step_i > step_i_acc && step_speed < step_max_speed){
-                step_speed += step_acceleration; //calculate next step speed
-                if (step_speed > step_max_speed) step_speed = step_max_speed;
-                step_i_acc++;
+            if (step_i > step_i_acc && step_speed < step_max_speed){ //speedup, acceleration plus
+                step_speed += step_acceleration; //inrease speed with acceleration
+                if (step_speed > step_max_speed) step_speed = step_max_speed; // prevent speed over max speed
+                step_i_acc++; // increment the speedup steps counter
+                step_delay = step_delay_denom / step_speed; // calculate delay in us
             }
-            if (step_i < step_i_acc){
-                step_speed -= step_acceleration; //calculate next step speed
-                if (step_speed < step_acceleration) step_speed = step_acceleration;
+            if (step_i < step_i_acc){ // slow down, acceleration minus
+                step_speed -= step_acceleration; //decrease speed with acceleration
+                if (step_speed < step_acceleration) step_speed = step_acceleration; // prevent too low speed
+                step_delay = step_delay_denom / step_speed; // calculate delay in us
             }
-            if (step_speed > 0) step_delay = step_delay_denom / step_speed; // calculate delay in us
             /*uart_transmit_int32(step_i, 0);
             uart_transmit_str(" ");
             uart_transmit_int32(step_i_acc, 0);
@@ -456,8 +458,8 @@ void move_to(int32_t position_to[]){ //move to absolute position [um]
             */
             for (uint8_t i = 0; i<DRIVERS_QTY; i++){
                 step_accum[i] += step_ac[i];
-                if (steps_left[i] > 0 && step_accum[i] >= tmp_int32){ // make step when accum value is bigger then "1/2" 
-                    step_accum[i] -= tmp_int32 << 1; // accum value minus "1" step acc value
+                if (steps_left[i] > 0 && step_accum[i] >= tmp_int32){ // make step when accum value is bigger then "1/2" of accumulator
+                    step_accum[i] -= tmp_int32 << 1; // minus "1" from accumulator
                     steps_left[i] --;
                     steps_done[i] ++;
                     step_n[i] = step_dir[i]; //"step_dir" equals one step
@@ -470,21 +472,20 @@ void move_to(int32_t position_to[]){ //move to absolute position [um]
         } //end "move" loop
     }
 
-    step_i = 0;
     for (uint8_t i=0; i<DRIVERS_QTY; i++){
         if (steps_left[i] != 0) step_i = 1;
     }
     if (step_i != 0){
         uart_write_str("DEBUG (move to):\r\n");
-        uart_write_arr_int32("move to: ", position_to, DRIVERS_QTY);
+        uart_write_arr_int32("position: ", position_to, DRIVERS_QTY);
         uart_write_arr_int32("accum:", step_accum, 4);
         uart_write_arr_int32("steps done:", steps_done, 4);
         uart_write_arr_int32("steps left:", steps_left, 4);
-        uart_write_arr_int32("a pos:", position_absolute, 4);
+        uart_write_arr_int32("position after:", position_absolute, 4);
     }
 }
 
-void move_to_xyz(int32_t ax, int32_t ay, int32_t az){
+/*void move_to_xyz(int32_t ax, int32_t ay, int32_t az){
     int32_t new_pos[DRIVERS_QTY];
     
     for (uint8_t i=0; i<DRIVERS_QTY; i++){
@@ -498,7 +499,7 @@ void move_to_xyz(int32_t ax, int32_t ay, int32_t az){
     move_to(new_pos);
 
     uart_write_str(TEXT_OK);
-}
+}*/
 
 void gcode_parse(char gcode_parse_buf[]){
     uint8_t i = 0;
@@ -538,7 +539,7 @@ void gcode_parse(char gcode_parse_buf[]){
             if (par_i <= GCMD_PAR_QTY){
                 if (gcode_cmd[par_i] != '\0') par_i++;
             }else{
-                uart_write_str(TEXT_ERROR);
+                uart_write_str(TEXT_ERROR_GC_TOOMANYPARAM);
             }
             break;
         case '-':
@@ -602,7 +603,7 @@ int main(void){
                 case 'G':
                     switch (gcode_par[0])
                     {
-                    case 1:
+                    case 1: //G1
                         for(i=0; i<DRIVERS_QTY; i++){
                             move_to_pos[i] = (position_absolute[i] * 1000) / motor_resolution[i];
                         }
@@ -621,14 +622,17 @@ int main(void){
                         move_to(move_to_pos);
                         uart_write_str(TEXT_OK);
                         break;
-                    case 21:
+                    case 21: //G21
                         uart_write_str(TEXT_OK);
                         break;
-                    case 90:
+                    case 28: //G28
+                        uart_write_str(TEXT_OK);
+                        break;
+                    case 90: //G90
                         uart_write_str(TEXT_OK);
                         break;
                     default:
-                        uart_write_str(TEXT_E23);
+                        uart_write_str(TEXT_ERROR_GC_DONTRECOGNIZE);
                         break;
                     } 
                     break; //end case "G"
@@ -667,13 +671,13 @@ int main(void){
                         uart_write_str(TEXT_OK);
                         break;
                     default:
-                        uart_write_str("$E23- command don't recognize\r\n");
+                        uart_write_str(TEXT_ERROR_GC_DONTRECOGNIZE);
                         break;
                     } 
                     break; //end case "M"
 
                 default:
-                    uart_write_str("$parsing fail\r\n");
+                    uart_write_str(TEXT_ERROR_GC_PARSINGFAIL);
                     break;
                 }
 
