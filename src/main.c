@@ -141,7 +141,8 @@
 */
 #endif
 
-static volatile uint32_t time_ms = 0, tmp = 0;;
+static volatile uint32_t time_ms = 0;
+static volatile char temp_str[17];
 
 #define UART_TXBUF_LEN 100
 static volatile char uart_txbuf[UART_TXBUF_LEN];
@@ -150,29 +151,29 @@ static volatile uint8_t uart_txbuf_o = 0;
 #define UART_RXBUF_LEN 100
 static volatile char uart_rxbuf[UART_RXBUF_LEN];
 #define UART_RXBUF_SLOTS_CNT 5
-static volatile uint8_t uart_rxbuf_slot_ready[UART_RXBUF_SLOTS_CNT]; //slot contains some string
 static volatile uint8_t uart_rxbuf_slot_start[UART_RXBUF_SLOTS_CNT]; //where strings starts (position of first char in rx_buf)
+static volatile uint8_t uart_rxbuf_slot_ready[UART_RXBUF_SLOTS_CNT]; //slot contains some string
 static volatile uint8_t uart_rxbuf_pos = 0;
 //static volatile uint8_t uart_rxbuf_o = 0;
 static volatile uint8_t uart_rxbuf_skip = 0;
 
 #define GCMD_PAR_QTY 8
-static char gcode_cmd_buf[32];
-static char gcode_cmd[GCMD_PAR_QTY];
-static int32_t gcode_par[GCMD_PAR_QTY];
-static uint8_t gcode_par_dec[GCMD_PAR_QTY];
+static char gcmd_buf[100];
+static char gcmd_par_id[GCMD_PAR_QTY];
+static int32_t gcmd_par_int[GCMD_PAR_QTY];
+static uint8_t gcmd_par_dec[GCMD_PAR_QTY];
 
 #define UNIT_DIST_PREC 1000 // distance unit precision: milimeters * x
 #define DRIVERS_QTY 4
 static int32_t unit_d_prec = UNIT_DIST_PREC;
-static char axis_letters[DRIVERS_QTY];
+static char drivers_mapping[DRIVERS_QTY]; // drivers mapping with axis lettes
 static int32_t position_absolute[DRIVERS_QTY] = {0,0,0,0}; // absolute position in steps
 static int32_t motor_resolution[DRIVERS_QTY] = {40,40,40,1}; // motors resolution steps/mm
 static uint8_t motor_dir_reverse[DRIVERS_QTY] = {0,0,0,0}; // motor rotation direction: 0 - normal, 1 - reversed
-static int32_t motor_max_speed[DRIVERS_QTY] = {400,50,50,50}; // motor max speed [mm/sec]
-static int32_t motor_speed[DRIVERS_QTY] = {250,50,50,50}; //motor speed for current move [mm/sec]
+static int32_t motor_max_speed[DRIVERS_QTY] = {400,400,50,50}; // motor max speed [mm/sec]
+static int32_t move_speed = 200; //move speed for current move [mm/sec]
 static int32_t motor_max_acceleration[DRIVERS_QTY] = {20,20,20,20}; // motor max acceleration [mm/sec2]
-static int32_t motor_acceleration[DRIVERS_QTY] = {20,20,20,10}; // motor acceleration [mm/sec2]
+static int32_t move_acceleration = 20; // move acceleration [mm/sec2]
 static int32_t move_to_pos[DRIVERS_QTY];
 
 void delay_us(int us){
@@ -276,6 +277,14 @@ void uart_transmit_next(void){
     }
 }
 
+void uart_write_char(char char_val){
+    while(uart_txbuf_o != 0){}; // wait for empty tx buffer;
+    uart_txbuf_i = 0;
+    uart_txbuf[uart_txbuf_i] = char_val;
+    uart_txbuf_i++;
+    uart_transmit_next();
+}
+
 void uart_write_str(volatile char text[]){
     uint8_t i = 0;
     while(uart_txbuf_o != 0){}; // wait for empty tx buffer;
@@ -291,7 +300,7 @@ void uart_write_str(volatile char text[]){
     uart_transmit_next();
 }
 
-void uart_write_int32(int32_t num, uint8_t fract_pos){
+void uart_write_int32(int32_t num, int8_t fract_pos){
     uint8_t i = 0;
     char sign = '\0';
     char tmp[] = {"\0\0\0\0\0\0\0\0\0\0\0\0"};
@@ -300,10 +309,15 @@ void uart_write_int32(int32_t num, uint8_t fract_pos){
         sign = '-';
         num = abs(num);
     }
-    while (num > 0 || i == 0){
+    while (num > 0 || i == 0 || fract_pos > -1){
         tmp[i] = (char)((num % 10) | 0x30);
         num = num / 10;
         i++;
+        if(fract_pos == 1){
+            tmp[i] = '.';
+            i++;
+        }
+        fract_pos--;
     }
     if (sign == '-'){
         tmp[i] = sign;
@@ -387,9 +401,9 @@ void move_step(int8_t step[], uint32_t delay){
 void move_to(int32_t position_to[]){ //move to absolute position [um]
     int32_t steps_left[DRIVERS_QTY];
     int32_t steps_done[DRIVERS_QTY];
-    int32_t step_dir[DRIVERS_QTY]; //1 = "+" dir, -1 = "-" dir
+    int8_t step_dir[DRIVERS_QTY]; //1 = "+" dir, -1 = "-" dir
     int32_t step_accum[DRIVERS_QTY];
-    int32_t step_ac[DRIVERS_QTY];
+    int32_t step_accum_inc[DRIVERS_QTY];
     int8_t step_n[DRIVERS_QTY];
     int32_t step_i = 0, step_i_acc = 0; // step_i - count steps to destination position, step_i_acc - count steps with acceleration+
     int32_t tmp_int32 = 0;
@@ -405,7 +419,7 @@ void move_to(int32_t position_to[]){ //move to absolute position [um]
     for (uint8_t i=0; i<DRIVERS_QTY; i++){
         step_dir[i] = 0;
         step_accum[i] = 0;
-        step_ac[i] = 0;
+        step_accum_inc[i] = 0;
         step_n[i] = 0;
         steps_done[i] = 0;
     
@@ -428,16 +442,16 @@ void move_to(int32_t position_to[]){ //move to absolute position [um]
     if (step_i > 0){
         for (uint8_t i=0; i<DRIVERS_QTY; i++){
             tmp_int64 = (int64_t)steps_left[i] * 1000; // *1000 to increase precision
-            step_ac[i] =  (int32_t)(tmp_int64 / step_i);
+            step_accum_inc[i] =  (int32_t)(tmp_int64 / step_i);
             steps_left[i] /= unit_d_prec;
         }
     }
 
-    if (motor_speed[0] > 0 && motor_acceleration[0] > 0){
-        step_max_speed = (motor_speed[0] * 1000) ; //maximum speed *1000 to increase precision
+    if (move_speed > 0 && move_acceleration > 0){
+        step_max_speed = (move_speed * 1000) ; //maximum speed *1000 to increase precision
         step_delay_denom = 1000000 * motor_resolution[0]; // microsecond * motor resolution
         step_delay =  step_delay_denom / step_max_speed; // step delay for maximum speed; microsecond * motor resolution / max speed
-        step_acceleration = (motor_acceleration[0] * 1000) / motor_resolution[0]; // *1000 to increace precision
+        step_acceleration = (move_acceleration * 1000) / motor_resolution[0]; // *1000 to increace precision
 
         tmp_int32 = unit_d_prec * (1000 / 2); // "1/2" accum, * 1000 to increae precision same as step_ac
 
@@ -464,7 +478,7 @@ void move_to(int32_t position_to[]){ //move to absolute position [um]
             uart_transmit_str(TEXT_EOL);
             */
             for (uint8_t i = 0; i<DRIVERS_QTY; i++){
-                step_accum[i] += step_ac[i];
+                step_accum[i] += step_accum_inc[i];
                 if (steps_left[i] > 0 && step_accum[i] >= tmp_int32){ // make step when accum value is bigger then "1/2" of accumulator
                     step_accum[i] -= tmp_int32 << 1; // minus "1" from accumulator
                     steps_left[i] --;
@@ -515,9 +529,9 @@ void gcode_parse(char gcode_parse_buf[]){
     uint8_t parse_dec;
 
     for (i=0; i<GCMD_PAR_QTY; i++){
-        gcode_cmd[i] = '\0';
-        gcode_par[i] = 0;
-        gcode_par_dec[i] = 0;
+        gcmd_par_id[i] = '\0';
+        gcmd_par_int[i] = 0;
+        gcmd_par_dec[i] = 0;
     }
 
     //uart_write_str(gcode_parse_buf);
@@ -530,21 +544,21 @@ void gcode_parse(char gcode_parse_buf[]){
         switch (gcode_parse_buf[i])
         {
         case 'A' ... 'Z':
-            gcode_cmd[par_i] = gcode_parse_buf[i];
+            gcmd_par_id[par_i] = gcode_parse_buf[i];
             parse_sign = 1;
             parse_dec = 0;
             break;
         case '0' ... '9':
-            gcode_par[par_i] *= 10;
-            gcode_par[par_i] += (((int8_t)gcode_parse_buf[i]) & 0x0F)*parse_sign;
-            gcode_par_dec[par_i] += parse_dec; 
+            gcmd_par_int[par_i] *= 10;
+            gcmd_par_int[par_i] += (((int8_t)gcode_parse_buf[i]) & 0x0F)*parse_sign;
+            gcmd_par_dec[par_i] += parse_dec; 
             break;
         case '.':
             parse_dec = 1;
             break;
         case ' ':
             if (par_i <= GCMD_PAR_QTY){
-                if (gcode_cmd[par_i] != '\0') par_i++;
+                if (gcmd_par_id[par_i] != '\0') par_i++;
             }else{
                 uart_write_str(TEXT_ERROR_GC_TOOMANYPARAM);
             }
@@ -575,10 +589,10 @@ int main(void){
         uart_rxbuf_slot_ready[i] = 0;
     }
 
-    axis_letters[0] = 'X';
-    axis_letters[1] = 'Y';
-    axis_letters[2] = 'Z';
-    axis_letters[3] = 'A';
+    drivers_mapping[0] = 'X';
+    drivers_mapping[1] = 'Y';
+    drivers_mapping[2] = 'Z';
+    drivers_mapping[3] = 'A';
     /*for (int i = 0; i<(motor_resolution[0] * 10); i++){
         move_step(1,0,0);
     }*/
@@ -591,24 +605,24 @@ int main(void){
             uint8_t i = uart_rxbuf_slot_start[0];
             uint8_t j = 0;
             while(uart_rxbuf[i] != '\0'){
-                gcode_cmd_buf[j] = uart_rxbuf[i];
+                gcmd_buf[j] = uart_rxbuf[i];
                 //uart_write_int32(i, 0);
                 //tmp_str[0] = uart_rxbuf[i];
                 //uart_write_str(tmp_str);
                 i++;
                 j++;
-                gcode_cmd_buf[j] = '\0'; //clear next pos because '\0' is end of string
+                gcmd_buf[j] = '\0'; //clear next pos because '\0' is end of string
                 if (i >= UART_RXBUF_LEN) i = 0;
             }
             uart_rxbuf_slot_ready[0] = 0;
             if (j>0){
                 //uart_write_str("$parsing\r\n");
-                gcode_parse(gcode_cmd_buf);
+                gcode_parse(gcmd_buf);
 
-                switch (gcode_cmd[0])
+                switch (gcmd_par_id[0])
                 {
                 case 'G':
-                    switch (gcode_par[0])
+                    switch (gcmd_par_int[0])
                     {
                     case 1: //G1
                         for(i=0; i<DRIVERS_QTY; i++){
@@ -616,14 +630,10 @@ int main(void){
                         }
                         for(j=1; j<GCMD_PAR_QTY; j++){
                             for(i=0; i<DRIVERS_QTY; i++){
-                                if(gcode_cmd[j] == axis_letters[i]) move_to_pos[i] = gcode_par[j];
+                                if(gcmd_par_id[j] == drivers_mapping[i]) move_to_pos[i] = gcmd_par_int[j];
                             }
-                            if(gcode_cmd[j] == 'F'){
-                                if (gcode_par[j] <= motor_max_speed[0]){
-                                    motor_speed[0] = gcode_par[j];
-                                }else{
-                                    motor_speed[0] = motor_max_speed[0];
-                                }
+                            if(gcmd_par_id[j] == 'F'){
+                                move_speed = gcmd_par_int[j]/60;
                             }
                         }
                         move_to(move_to_pos);
@@ -644,16 +654,31 @@ int main(void){
                     } 
                     break; //end case "G"
                 case 'M':
-                    switch (gcode_par[0])
+                    switch (gcmd_par_int[0])
                     {
+                    case 92: // set motor resolution [step/mmm]
+                        for(i=0; i<DRIVERS_QTY; i++){
+                            for(j=1; j<GCMD_PAR_QTY; j++){
+                                if(gcmd_par_id[j] == drivers_mapping[i]) {
+                                    motor_resolution[i] = gcmd_par_int[j];
+                                }
+                            }
+                        }
+                        uart_write_str(TEXT_OK);
+                        break;
                     case 106:
                         uart_write_str(TEXT_OK);
                         break;
                     case 114:
-                        for (i=0; i<DRIVERS_QTY; i++){
-                            
-                            uart_write_str("X:0.000 Y:0.000 Z:0.000 A:0.000\r\n");
+                        for(i=0; i<DRIVERS_QTY; i++){
+                            if(drivers_mapping[i] != '\0'){
+                                uart_write_char(drivers_mapping[i]);
+                                uart_write_char(':');
+                                uart_write_int32((position_absolute[i] * 1000) / motor_resolution[i], 3);
+                                uart_write_char(' ');
+                            }
                         }
+                        uart_write_str(TEXT_EOL);
                         uart_write_str(TEXT_OK);
                         break;
                     case 115:
@@ -663,18 +688,22 @@ int main(void){
                     case 204:
                         for(i=0; i<DRIVERS_QTY; i++){
                             for(j=1; j<GCMD_PAR_QTY; j++){
-                                if(gcode_cmd[j] == 'S') {
-                                    if (gcode_par[j] <= motor_max_acceleration[0]){
-                                        motor_acceleration[0] = gcode_par[j];
-                                    }else{
-                                        motor_acceleration[0] = motor_max_acceleration[0];
-                                    }
+                                if(gcmd_par_id[j] == 'S') {
+                                    move_acceleration = gcmd_par_int[j];
                                 }
                             }
                         }
                         uart_write_str(TEXT_OK);
                         break;
-                    case 400:
+                    case 400: // wait for moves
+                        uart_write_str(TEXT_OK);
+                        break;
+                    case 584: // define drive to axis mapping
+                        for(j=1; j<GCMD_PAR_QTY; j++){
+                            if(gcmd_par_id[j] != '\0' && gcmd_par_int[j] >= 0 && gcmd_par_int[j] < DRIVERS_QTY) {
+                                drivers_mapping[gcmd_par_int[j]] = gcmd_par_id[j];
+                            }
+                        }
                         uart_write_str(TEXT_OK);
                         break;
                     default:
