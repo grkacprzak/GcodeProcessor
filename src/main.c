@@ -120,6 +120,13 @@
     #define PORT_DRV4STEP GPIOA //PA6
     #define PIO_DRV4STEP P6
 
+    #define PORT_ENDXM GPIOC //PC7
+    #define PIO_ENDXM P7
+    #define PORT_ENDYM GPIOB //PB6
+    #define PIO_ENDYM P6
+    #define PORT_ENDZM GPIOA //PA7
+    #define PIO_ENDZM P7
+
     #define UART2PORT GPIOA
 /*
     //BTT OctopusPro 1.0
@@ -170,6 +177,8 @@ static char drivers_mapping[DRIVERS_QTY]; // drivers mapping with axis lettes
 static int32_t position_absolute[DRIVERS_QTY] = {0,0,0,0}; // absolute position in steps
 static int32_t motor_resolution[DRIVERS_QTY] = {40,40,40,1}; // motors resolution steps/mm
 static uint8_t motor_dir_reverse[DRIVERS_QTY] = {0,0,0,0}; // motor rotation direction: 0 - normal, 1 - reversed
+static int8_t axis_limit_sw_conf[DRIVERS_QTY] = {-1,-1,0,0}; // axis limit switches: 0 - no switch, -1 - switch in negative end, 1 - switc in positive end
+static int8_t axis_limit_sw_state[DRIVERS_QTY] = {0,0,0,0};
 static int32_t motor_max_speed[DRIVERS_QTY] = {400,400,50,50}; // motor max speed [mm/sec]
 static int32_t move_speed = 200; //move speed for current move [mm/sec]
 static int32_t motor_max_acceleration[DRIVERS_QTY] = {20,20,20,20}; // motor max acceleration [mm/sec2]
@@ -189,81 +198,6 @@ void delay_ms(int ms){
       while (x-- > 0)
          __asm("nop");
    }
-}
-
-void gpio_pin_mode_set(GPIO_TypeDef * const __restrict__ gpio_port, uint32_t gpio_pin, uint32_t gpio_mode, uint32_t gpio_type){
-    //GPIO_MODER - input / output / alternate / analog
-    gpio_port->MODER = (gpio_port->MODER & ~(GPIO_MODER_MASK << (2*gpio_pin))) | (((gpio_mode  >> GPIO_MODE_MODER_ROL) & GPIO_MODER_MASK) << (2*gpio_pin));
-    //GPIO_OTYPER - output type: push-pull / open dren
-    gpio_port->OTYPER = (gpio_port->OTYPER & ~(GPIO_OTYPER_MASK << gpio_pin)) | (((gpio_type >> GPIO_TYPE_OTYPER_ROL) & GPIO_OTYPER_MASK) << gpio_pin);
-    //GPIO_OSPEEDR
-    gpio_port->OSPEEDR = (gpio_port->OSPEEDR & ~(GPIO_OSPEEDR_MASK << (2*gpio_pin))) | (((gpio_type >> GPIO_TYPE_OSPEEDR_ROL) & GPIO_OSPEEDR_MASK) << (2*gpio_pin));
-    //GPIO_PUPDR - no pull / pull up / pull down / (reserved)
-    gpio_port->PUPDR = (gpio_port->PUPDR & ~(GPIO_PUPDR_MASK << (2*gpio_pin))) | (((gpio_mode >> GPIO_TYPE_PUPDR_ROL) & GPIO_PUPDR_MASK) << (2*gpio_pin));
-    //GPIO_AFRL/H - Alternate function
-    if (gpio_pin <= 7){
-        gpio_port->AFR[0] = (gpio_port->AFR[0] & ~(GPIO_AFR_MASK << (4*gpio_pin))) | (((gpio_mode >> GPIO_MODE_AFR_ROL) & GPIO_AFR_MASK) << (4*gpio_pin));
-    }else{
-        gpio_port->AFR[1] = (gpio_port->AFR[1] & ~(GPIO_AFR_MASK << (4*(gpio_pin-8)))) | (((gpio_mode >> GPIO_MODE_AFR_ROL) & GPIO_AFR_MASK) << (4*(gpio_pin-8)));
-    }
-}
-
-void gpio_pin_set(GPIO_TypeDef * const __restrict__ gpio_port, uint32_t gpio_pin, uint8_t val){
-    gpio_port->ODR = ((gpio_port->ODR & ~(1UL << gpio_pin)) | (val << gpio_pin));
-}
-
-void gpio_pin_tog(GPIO_TypeDef * const __restrict__ gpio_port, uint32_t gpio_pin){
-    gpio_port->ODR ^= (0x01UL << gpio_pin);
-}
-
-void config_hw(void){
-
-    //uart_tx_buf = "ok\0";
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;              // enable the clock to GPIO
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;              // enable the clock to GPIO
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOFEN;              // enable the clock to GPIO
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOGEN;              // enable the clock to GPIO
-    __DSB();
-
-    //LD2 - On board LED
-    gpio_pin_mode_set(PORT_LD2, PIO_LD2, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_LS);
-
-    //UART2
-    RCC->APB1ENR |= RCC_APB1ENR_USART2EN;             // enable uart2 clock
-    __DSB();
-     
-    gpio_pin_mode_set(UART2PORT, P2, GPIO_MODE_AF7, GPIO_TYPE_PP_NP_LS); // PA2 TX
-    gpio_pin_mode_set(UART2PORT, P3, GPIO_MODE_AF7, GPIO_TYPE_PP_PU_LS); // PA3 RX
-
-    USART2->BRR = 139;              //115200
-    USART2->SR &= ~USART_SR_RXNE;
-    USART2->SR &= ~USART_SR_TC;
-    USART2->CR1 = USART_CR1_UE | USART_CR1_TCIE | USART_CR1_RXNEIE | USART_CR1_TE | USART_CR1_RE;
-    NVIC_EnableIRQ(USART2_IRQn); //USART2 interrupt enable
-
-    //systick    
-    SysTick_Config(16000); // ms ticks
-
-    //Stepping motor driver ports
-    //gpio_pin_set(PORT_DRV1EN, PIO_DRV1EN, 0);
-    gpio_pin_mode_set(PORT_DRV1EN, PIO_DRV1EN, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
-    gpio_pin_mode_set(PORT_DRV1DIR, PIO_DRV1DIR, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
-    gpio_pin_mode_set(PORT_DRV1STEP, PIO_DRV1STEP, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
-
-    //gpio_pin_set(PORT_DRV2EN, PIO_DRV2EN, 0);
-    gpio_pin_mode_set(PORT_DRV2EN, PIO_DRV2EN, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
-    gpio_pin_mode_set(PORT_DRV2DIR, PIO_DRV2DIR, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
-    gpio_pin_mode_set(PORT_DRV2STEP, PIO_DRV2STEP, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
-
-    //gpio_pin_set(PORT_DRV3EN, PIO_DRV3EN, 0);
-    gpio_pin_mode_set(PORT_DRV3EN, PIO_DRV3EN, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
-    gpio_pin_mode_set(PORT_DRV3DIR, PIO_DRV3DIR, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
-    gpio_pin_mode_set(PORT_DRV3STEP, PIO_DRV3STEP, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
-
-    //gpio_pin_set(PORT_DRV3EN, PIO_DRV3EN, 0);
-    gpio_pin_mode_set(PORT_DRV4EN, PIO_DRV4EN, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
-    gpio_pin_mode_set(PORT_DRV4DIR, PIO_DRV4DIR, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
-    gpio_pin_mode_set(PORT_DRV4STEP, PIO_DRV4STEP, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
 }
 
 void uart_transmit_next(void){
@@ -300,6 +234,34 @@ void uart_write_str(volatile char text[]){
     uart_transmit_next();
 }
 
+void uart_write_uint32_bin(uint32_t num){
+    uint8_t i = 0;
+    char tmp[] = {"00000000 00000000 00000000 00000000"};
+
+    i = 0;
+    while(num !=0){
+        if(tmp[i] == ' ') i++;
+        tmp[i] = (char)(0x30 | ((char)num & 1U));
+        num = num >> 1;
+        i++;
+    }
+    while(tmp[i] != '\0'){
+        i++;
+    }
+
+    while(uart_txbuf_o != 0){}; // wait for empty tx buffer;
+    uart_txbuf_i = 0;
+    while (i>0){
+        i--;
+        uart_txbuf[uart_txbuf_i] = tmp[i];
+        uart_txbuf_i++;
+        if (uart_txbuf_i >= UART_TXBUF_LEN){
+            uart_txbuf_i = 0;
+        }
+    }
+    uart_transmit_next();
+}
+
 void uart_write_int32(int32_t num, int8_t fract_pos){
     uint8_t i = 0;
     char sign = '\0';
@@ -311,7 +273,7 @@ void uart_write_int32(int32_t num, int8_t fract_pos){
     }
     while (num > 0 || i == 0 || fract_pos > -1){
         tmp[i] = (char)((num % 10) | 0x30);
-        num = num / 10;
+        num /= 10;
         i++;
         if(fract_pos == 1){
             tmp[i] = '.';
@@ -374,6 +336,92 @@ void uart_write_arr_char(char str[], char arr[], uint8_t n){
     uart_write_str(TEXT_EOL);
 }
 
+void gpio_pin_mode_set(GPIO_TypeDef * const __restrict__ gpio_port, uint32_t gpio_pin, uint32_t gpio_mode, uint32_t gpio_type){
+    //GPIO_MODER - input / output / alternate / analog
+    gpio_port->MODER = (gpio_port->MODER & ~(GPIO_MODER_MASK << (2*gpio_pin))) | (((gpio_mode  >> GPIO_MODE_MODER_ROL) & GPIO_MODER_MASK) << (2*gpio_pin));
+    //GPIO_OTYPER - output type: push-pull / open dren
+    gpio_port->OTYPER = (gpio_port->OTYPER & ~(GPIO_OTYPER_MASK << gpio_pin)) | (((gpio_type >> GPIO_TYPE_OTYPER_ROL) & GPIO_OTYPER_MASK) << gpio_pin);
+    //GPIO_OSPEEDR
+    gpio_port->OSPEEDR = (gpio_port->OSPEEDR & ~(GPIO_OSPEEDR_MASK << (2*gpio_pin))) | (((gpio_type >> GPIO_TYPE_OSPEEDR_ROL) & GPIO_OSPEEDR_MASK) << (2*gpio_pin));
+    //GPIO_PUPDR - no pull / pull up / pull down / (reserved)
+    gpio_port->PUPDR = (gpio_port->PUPDR & ~(GPIO_PUPDR_MASK << (2*gpio_pin))) | (((gpio_type >> GPIO_TYPE_PUPDR_ROL) & GPIO_PUPDR_MASK) << (2*gpio_pin));
+    //GPIO_AFRL/H - Alternate function
+    if (gpio_pin <= 7){
+        gpio_port->AFR[0] = (gpio_port->AFR[0] & ~(GPIO_AFR_MASK << (4*gpio_pin))) | (((gpio_mode >> GPIO_MODE_AFR_ROL) & GPIO_AFR_MASK) << (4*gpio_pin));
+    }else{
+        gpio_port->AFR[1] = (gpio_port->AFR[1] & ~(GPIO_AFR_MASK << (4*(gpio_pin-8)))) | (((gpio_mode >> GPIO_MODE_AFR_ROL) & GPIO_AFR_MASK) << (4*(gpio_pin-8)));
+    }
+}
+
+int8_t gpio_pin_read(GPIO_TypeDef * const __restrict__ gpio_port, uint32_t gpio_pin){
+    return ((gpio_port->IDR >> gpio_pin) & 1UL);
+}
+
+void gpio_pin_set(GPIO_TypeDef * const __restrict__ gpio_port, uint32_t gpio_pin, uint8_t val){
+    gpio_port->ODR = ((gpio_port->ODR & ~(1UL << gpio_pin)) | (val << gpio_pin));
+}
+
+void gpio_pin_tog(GPIO_TypeDef * const __restrict__ gpio_port, uint32_t gpio_pin){
+    gpio_port->ODR ^= (0x01UL << gpio_pin);
+}
+
+void config_hw(void){
+
+    //uart_tx_buf = "ok\0";
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;              // enable the clock to GPIO
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;              // enable the clock to GPIO
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOCEN;              // enable the clock to GPIO
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOFEN;              // enable the clock to GPIO
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOGEN;              // enable the clock to GPIO
+    __DSB();
+
+    //LD2 - On board LED
+    gpio_pin_mode_set(PORT_LD2, PIO_LD2, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_LS);
+
+    //UART2
+    RCC->APB1ENR |= RCC_APB1ENR_USART2EN;             // enable uart2 clock
+    __DSB();
+     
+    gpio_pin_mode_set(UART2PORT, P2, GPIO_MODE_AF7, GPIO_TYPE_PP_NP_LS); // PA2 TX
+    gpio_pin_mode_set(UART2PORT, P3, GPIO_MODE_AF7, GPIO_TYPE_PP_PU_LS); // PA3 RX
+
+    USART2->BRR = 139;              //115200
+    USART2->SR &= ~USART_SR_RXNE;
+    USART2->SR &= ~USART_SR_TC;
+    USART2->CR1 = USART_CR1_UE | USART_CR1_TCIE | USART_CR1_RXNEIE | USART_CR1_TE | USART_CR1_RE;
+    NVIC_EnableIRQ(USART2_IRQn); //USART2 interrupt enable
+
+    //systick    
+    SysTick_Config(16000); // ms ticks
+
+
+    //Axis limit switches ports
+    gpio_pin_mode_set(PORT_ENDXM, PIO_ENDXM, GPIO_MODE_INPUT, GPIO_TYPE_OD_PU_HS);
+    gpio_pin_mode_set(PORT_ENDYM, PIO_ENDYM, GPIO_MODE_INPUT, GPIO_TYPE_OD_PU_HS);
+    gpio_pin_mode_set(PORT_ENDZM, PIO_ENDZM, GPIO_MODE_INPUT, GPIO_TYPE_OD_PU_HS);
+
+    //Stepping motor driver ports
+    //gpio_pin_set(PORT_DRV1EN, PIO_DRV1EN, 0);
+    gpio_pin_mode_set(PORT_DRV1EN, PIO_DRV1EN, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
+    gpio_pin_mode_set(PORT_DRV1DIR, PIO_DRV1DIR, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
+    gpio_pin_mode_set(PORT_DRV1STEP, PIO_DRV1STEP, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
+
+    //gpio_pin_set(PORT_DRV2EN, PIO_DRV2EN, 0);
+    gpio_pin_mode_set(PORT_DRV2EN, PIO_DRV2EN, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
+    gpio_pin_mode_set(PORT_DRV2DIR, PIO_DRV2DIR, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
+    gpio_pin_mode_set(PORT_DRV2STEP, PIO_DRV2STEP, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
+
+    //gpio_pin_set(PORT_DRV3EN, PIO_DRV3EN, 0);
+    gpio_pin_mode_set(PORT_DRV3EN, PIO_DRV3EN, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
+    gpio_pin_mode_set(PORT_DRV3DIR, PIO_DRV3DIR, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
+    gpio_pin_mode_set(PORT_DRV3STEP, PIO_DRV3STEP, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
+
+    //gpio_pin_set(PORT_DRV3EN, PIO_DRV3EN, 0);
+    gpio_pin_mode_set(PORT_DRV4EN, PIO_DRV4EN, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
+    gpio_pin_mode_set(PORT_DRV4DIR, PIO_DRV4DIR, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
+    gpio_pin_mode_set(PORT_DRV4STEP, PIO_DRV4STEP, GPIO_MODE_OUTPUT, GPIO_TYPE_PP_NP_HS);
+}
+
 void move_step(int8_t step[], uint32_t delay){
     //set DIR pins
     gpio_pin_set(PORT_DRV1DIR, PIO_DRV1DIR, ((step[0] >> 1) & 0x01U) ^ motor_dir_reverse[0]);
@@ -393,6 +441,11 @@ void move_step(int8_t step[], uint32_t delay){
     gpio_pin_set(PORT_DRV3STEP, PIO_DRV3STEP, 0);
     gpio_pin_set(PORT_DRV4STEP, PIO_DRV4STEP, 0);
     delay_us(delay/2);
+    
+    axis_limit_sw_state[0] = gpio_pin_read(PORT_ENDXM, PIO_ENDXM);
+    axis_limit_sw_state[1] = gpio_pin_read(PORT_ENDYM, PIO_ENDYM);
+    axis_limit_sw_state[2] = gpio_pin_read(PORT_ENDZM, PIO_ENDZM);
+
     for(uint8_t i=0; i<DRIVERS_QTY; i++){
         position_absolute[i] += step[i];
     }
@@ -576,6 +629,67 @@ void gcode_parse(char gcode_parse_buf[]){
     //uart_write_arr_uint8("par d:", gcode_par_dec, GCMD_PAR_QTY);
 }
 
+void gcmd_g28(void){
+    uint8_t i, tmp;
+    int8_t step_n[DRIVERS_QTY];
+    uint32_t step_delay;
+    int32_t g28pos[DRIVERS_QTY];
+
+
+    step_delay =  (1000 * motor_resolution[0]) / move_speed; // step delay for maximum speed; microsecond * motor resolution / max speed
+    step_delay *= 20;
+
+    tmp = 0;
+    for(i=0; i<DRIVERS_QTY; i++){
+        step_n[i] = axis_limit_sw_conf[i];
+        if(step_n[i] != 0) tmp++;
+    }
+    
+    while(tmp > 0){
+        move_step(step_n, step_delay);
+        tmp = 0;
+        for(i=0; i<DRIVERS_QTY; i++){
+            if(axis_limit_sw_state[i] == 1) step_n[i] = 0;
+            if(step_n[i] != 0) tmp++;
+        }
+    }
+
+    // set axis position to 0 only when axis have end switch;
+    for(i=0; i<DRIVERS_QTY; i++){
+        if(axis_limit_sw_conf[i] != 0) position_absolute[i] = 0;
+    }
+
+    step_delay *= 2;
+
+    for(i=0; i<DRIVERS_QTY; i++){
+        g28pos[i] = 10000 * abs(axis_limit_sw_conf[i]);
+    }
+    
+    move_to(g28pos);
+
+    tmp = 0;
+    for(i=0; i<DRIVERS_QTY; i++){
+        step_n[i] = axis_limit_sw_conf[i];
+        if(step_n[i] != 0) tmp++;
+    }
+    
+    while(tmp > 0){
+        move_step(step_n, step_delay);
+        tmp = 0;
+        for(i=0; i<DRIVERS_QTY; i++){
+            if(axis_limit_sw_state[i] == 1) step_n[i] = 0;
+            if(step_n[i] != 0) tmp++;
+        }
+    }
+
+    // set axis position to 0 only when axis have end switch;
+    for(i=0; i<DRIVERS_QTY; i++){
+        if(axis_limit_sw_conf[i] != 0) position_absolute[i] = 0;
+    }
+
+    uart_write_str(TEXT_OK);
+}
+
 int main(void){
 
     config_hw();
@@ -598,8 +712,74 @@ int main(void){
     }*/
     uart_write_str(TEXT_ALIVE);
 
+    /*uart_write_uint32_bin(0xFF00AA55);
+    uart_write_str(TEXT_EOL);
+    uart_write_str(TEXT_EOL);
+
+
+    uart_write_str("A MODER:  ");
+    uart_write_uint32_bin(GPIOA->MODER);
+    uart_write_str(TEXT_EOL);
+    uart_write_str("A OTYPER: ");
+    uart_write_uint32_bin(GPIOA->OTYPER);
+    uart_write_str(TEXT_EOL);
+    uart_write_str("A SPEEDR: ");
+    uart_write_uint32_bin(GPIOA->OSPEEDR);
+    uart_write_str(TEXT_EOL);
+    uart_write_str("A PUPDR:  ");
+    uart_write_uint32_bin(GPIOA->PUPDR);
+    uart_write_str(TEXT_EOL);
+    uart_write_str("A AFR0:   ");
+    uart_write_uint32_bin(GPIOA->AFR[0]);
+    uart_write_str(TEXT_EOL);
+    uart_write_str("A AFR1:   ");
+    uart_write_uint32_bin(GPIOA->AFR[1]);
+    uart_write_str(TEXT_EOL);
+    uart_write_str(TEXT_EOL);
+
+    uart_write_str("B MODER:  ");
+    uart_write_uint32_bin(GPIOB->MODER);
+    uart_write_str(TEXT_EOL);
+    uart_write_str("B OTYPER: ");
+    uart_write_uint32_bin(GPIOB->OTYPER);
+    uart_write_str(TEXT_EOL);
+    uart_write_str("B SPEEDR: ");
+    uart_write_uint32_bin(GPIOB->OSPEEDR);
+    uart_write_str(TEXT_EOL);
+    uart_write_str("B PUPDR:  ");
+    uart_write_uint32_bin(GPIOB->PUPDR);
+    uart_write_str(TEXT_EOL);
+    uart_write_str("B AFR0:   ");
+    uart_write_uint32_bin(GPIOB->AFR[0]);
+    uart_write_str(TEXT_EOL);
+    uart_write_str("B AFR1:   ");
+    uart_write_uint32_bin(GPIOB->AFR[1]);
+    uart_write_str(TEXT_EOL);
+    uart_write_str(TEXT_EOL);
+
+    uart_write_str("C MODER:  ");
+    uart_write_uint32_bin(GPIOC->MODER);
+    uart_write_str(TEXT_EOL);
+    uart_write_str("C OTYPER: ");
+    uart_write_uint32_bin(GPIOC->OTYPER);
+    uart_write_str(TEXT_EOL);
+    uart_write_str("C SPEEDR: ");
+    uart_write_uint32_bin(GPIOC->OSPEEDR);
+    uart_write_str(TEXT_EOL);
+    uart_write_str("C PUPDR:  ");
+    uart_write_uint32_bin(GPIOC->PUPDR);
+    uart_write_str(TEXT_EOL);
+    uart_write_str("C AFR0:   ");
+    uart_write_uint32_bin(GPIOC->AFR[0]);
+    uart_write_str(TEXT_EOL);
+    uart_write_str("C AFR1:   ");
+    uart_write_uint32_bin(GPIOC->AFR[1]);
+    uart_write_str(TEXT_EOL);
+    uart_write_str(TEXT_EOL);*/
+
     //char tmp_str[] = {"\0\0"};
     for(;;){
+
         if (uart_rxbuf_slot_ready[0] == 1){
             //move string from uart rx buffer to gcode parse buffer
             uint8_t i = uart_rxbuf_slot_start[0];
@@ -643,7 +823,7 @@ int main(void){
                         uart_write_str(TEXT_OK);
                         break;
                     case 28: //G28
-                        uart_write_str(TEXT_OK);
+                        gcmd_g28();
                         break;
                     case 90: //G90
                         uart_write_str(TEXT_OK);
